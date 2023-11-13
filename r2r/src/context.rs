@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::*;
 use crate::log_guard;
+use crate::msg_types::WrappedTypesupport;
 use r2r_rcl::*;
 
 /// A ROS context. Needed to create nodes etc.
@@ -81,6 +82,38 @@ impl Context {
     pub fn is_valid(&self) -> bool {
         let mut ctx = self.context_handle.lock().unwrap();
         unsafe { rcl_context_is_valid(ctx.as_mut()) }
+    }
+
+    pub fn deserialize<T: WrappedTypesupport>(bytes: &[u8]) -> std::result::Result<T, &'static str> {
+        let deserialized_message : std::result::Result<T, &'static str>;
+
+        unsafe {
+            let msg = rmw_serialized_message_t {
+                buffer: bytes.as_ptr() as *mut u8,      // NOTE: Casting to mutable, so we just hope that deserialization doesn't actually mutate it!
+                buffer_length: bytes.len(),
+                buffer_capacity: bytes.len(),
+                allocator: rcutils_get_default_allocator()
+            };
+
+            let ts = T::get_ts();
+            let native = T::create_msg();
+            let ret = rmw_deserialize(&msg, ts, native as *mut std::os::raw::c_void) as u32;
+            if ret == RMW_RET_OK {
+                deserialized_message = Ok(T::from_native(&*native));
+                T::destroy_msg(native);
+            }
+            else if ret == RMW_RET_BAD_ALLOC {
+                deserialized_message = Err("RMW returned RMW_RET_BAD_ALLOC");
+            }
+            else if ret == RMW_RET_ERROR {
+                deserialized_message = Err("RMW returned RMW_RET_ERROR");
+            }
+            else {
+                deserialized_message = Err("RMW returned unknown error type");
+            }
+        }
+
+        deserialized_message
     }
 }
 
